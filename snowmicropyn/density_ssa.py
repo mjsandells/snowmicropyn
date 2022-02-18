@@ -71,7 +71,7 @@ def calc_step(median_force, element_size, coeff_model):
     return density, ssa
 
 
-def calc(samples, coeff_model=None, window=snowmicropyn.windowing.DEFAULT_WINDOW, overlap=snowmicropyn.windowing.DEFAULT_WINDOW_OVERLAP):
+def calc(samples, coeff_model=None, window=snowmicropyn.windowing.DEFAULT_WINDOW, overlap=snowmicropyn.windowing.DEFAULT_WINDOW_OVERLAP, ignore_surface_pick=False):
     """Calculate ssa and density from a pandas dataframe containing the samples
     of a SnowMicroPen recording.
 
@@ -99,10 +99,10 @@ def calc(samples, coeff_model=None, window=snowmicropyn.windowing.DEFAULT_WINDOW
         pass
 
     if isinstance(samples, list):
-        sn = median_profile(samples, window, overlap)
+        sn = median_profile(samples, window, overlap, ignore_surface_pick)
     else:
         # Apply filtering to remove -ve force and linearly interpolate
-        samples.loc[samples['force'] < 0, 'force'] = np.nan
+        samples.loc[samples['force'] <= 0, 'force'] = np.nan
         samples.force.interpolate(method='linear', inplace=True)
         sn = snowmicropyn.loewe2012.calc(samples, window, overlap)
 
@@ -113,7 +113,7 @@ def calc(samples, coeff_model=None, window=snowmicropyn.windowing.DEFAULT_WINDOW
     return pd.DataFrame(result, columns=['distance', 'density', 'ssa'])
 
 
-def median_profile(list_of_filenames, window, overlap):
+def median_profile(list_of_filenames, window, overlap, ignore_surface_pick):
     
     '''
     Function to calculate the median force of several SMP profiles. 
@@ -130,7 +130,11 @@ def median_profile(list_of_filenames, window, overlap):
     '''    
     
     # Find shortest profile
-    shortest_length = min([(profile.Profile(p).detect_ground() - profile.Profile(p).detect_surface()) for p in list_of_filenames])
+    if ignore_surface_pick == True:
+        shortest_length = min([(profile.Profile(p).detect_ground()) for p in list_of_filenames])
+    else:
+        shortest_length = min([(profile.Profile(p).detect_ground() - profile.Profile(p).detect_surface()) for p in list_of_filenames])
+
     # Get depth resolution of samples
     depth_step = profile.Profile(list_of_filenames[0]).samples.distance.diff().iloc[-1]
     # Get final resolution from windowing method
@@ -138,14 +142,18 @@ def median_profile(list_of_filenames, window, overlap):
     # NB detect_ground is at measured height, detect_surface is between measured heights
     # This still ignores first half layer i.e. surface is put at first measurement within snow
     nlayers = int(shortest_length / depth_step)
-    final_nlayers = int(shortest_length / final_resolution)
+    final_nlayers = int(shortest_length / final_resolution) + 1
     # Create pandas dataframe with depths - will add force for each profile later
     df = pd.DataFrame(np.arange(final_nlayers) * final_resolution, columns=['distance'])
     
     # Add cropped profile calculated median force and structural element length to dataframe
     for p in list_of_filenames:
         # Crop to surface NB original distance retained i.e. doesn't start at zero but think this is ok
-        cropped_samples = profile.Profile(p).samples[profile.Profile(p).samples.distance > profile.Profile(p).detect_surface()][:nlayers]
+        if ignore_surface_pick == True:
+            # NB should really crop from base
+            cropped_samples = profile.Profile(p).samples[len(profile.Profile(p).samples) - nlayers:] # Just crop to shortest full profile for now.
+        else:
+            cropped_samples = profile.Profile(p).samples[profile.Profile(p).samples.distance > profile.Profile(p).detect_surface()][:nlayers]
         # force = profile.Profile(p).samples[profile.Profile(p).samples.distance > profile.Profile(p).detect_surface()]['force'].to_numpy(copy=True)[:nlayers]
         # Try to run loewe2012 calc
         profile_fandL = snowmicropyn.loewe2012.calc(cropped_samples, window, overlap)
